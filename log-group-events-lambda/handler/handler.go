@@ -116,6 +116,32 @@ func HandleRequest(ctx context.Context, event map[string]interface{}) (string, e
 			return "", err
 		}
 
+	case "CreateFunction20150331":
+		sugLog.Debug("Detected EventBridge CreateFunction20150331 event")
+
+		if !envConfig.tagEventsEnabled {
+			sugLog.Debug("Skipping CreateFunction20150331 event - TAG_EVENTS_ENABLED is not set to true")
+			return "CreateFunction20150331 event skipped - feature disabled", nil
+		}
+
+		functionName, ok := requestParameters["functionName"].(string)
+		if !ok {
+			sugLog.Errorf("`functionName` is not of type string or missing from EventBridge event.")
+			return "", fmt.Errorf("`functionName` is not of type string or missing from EventBridge event")
+		}
+		taggedResource := fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", envConfig.region, envConfig.accountId, functionName)
+
+		if !hasMonitoringTag(requestParameters) {
+			sugLog.Debugf("Skipping CreateFunction20150331 event - monitoring tag %s: %s not present", envConfig.monitoringTagKey, envConfig.monitoringTagValue)
+			return "CreateFunction20150331 event skipped - monitoring tag not present", nil
+		}
+
+		_, err := handleTagResourceEvent(ctx, taggedResource)
+
+		if err != nil {
+			return "", err
+		}
+
 	case "SubscriptionFilterEvent":
 		sugLog.Debug("Detected SubscriptionFilterEvent event")
 
@@ -181,7 +207,11 @@ func handleNewLogGroupEvent(ctx context.Context, newLogGroup string) {
 		for _, service := range currMonitoredServices {
 			if prefix, ok := serviceToPrefix[service]; ok {
 				if strings.Contains(newLogGroup, prefix) {
-					added, _ = cwClient.addSubscriptionFilter([]string{newLogGroup})
+					var err error
+					added, err = cwClient.addSubscriptionFilter([]string{newLogGroup})
+					if err != nil {
+						sugLog.Errorf("Failed to add subscription filter to log group %s: %v", newLogGroup, err)
+					}
 					if len(added) > 0 {
 						sugLog.Info("Added subscription filter to log group: ", newLogGroup)
 						return
@@ -196,7 +226,11 @@ func handleNewLogGroupEvent(ctx context.Context, newLogGroup string) {
 	if len(currCustomGroupsPrefixes) > 0 {
 		for _, prefix := range currCustomGroupsPrefixes {
 			if strings.Contains(newLogGroup, prefix) {
-				added, _ = cwClient.addSubscriptionFilter([]string{newLogGroup})
+				var err error
+				added, err = cwClient.addSubscriptionFilter([]string{newLogGroup})
+				if err != nil {
+					sugLog.Errorf("Failed to add subscription filter to log group %s: %v", newLogGroup, err)
+				}
 				if len(added) > 0 {
 					sugLog.Info("Added subscription filter to log group: ", newLogGroup)
 					return

@@ -75,6 +75,10 @@ func (cwLogsClient *CloudWatchLogsClient) addSubscriptionFilter(logGroups []stri
 					} else if ok && awsErr.Code() == "LimitExceededException" {
 						sugLog.Warnf("Limit exceeded while trying to add subscription filter for %s: %v", logGroup, err.Error())
 						return
+					} else if ok && awsErr.Code() == "ResourceNotFoundException" {
+						sugLog.Errorf("Log group %s does not exist - subscription filter cannot be added", logGroup)
+						result = multierror.Append(result, err)
+						return
 					} else {
 						sugLog.Errorf("Error while trying to add subscription filter for %s: %v", logGroup, err.Error())
 						result = multierror.Append(result, err)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/logzio/firehose-logs/common"
 	"github.com/logzio/firehose-logs/logger"
 	"github.com/stretchr/testify/assert"
 )
@@ -537,6 +538,22 @@ func TestTagEventsDisabledByDefault(t *testing.T) {
 			expectedOutputMsg: "TagResource20170331v2 event skipped - feature disabled",
 			expectedError:     false,
 		},
+		{
+			name: "CreateFunction20150331 event should be skipped when TAG_EVENTS_ENABLED is not set",
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+						"tags": map[string]interface{}{
+							"logzio:logs": "true",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event skipped - feature disabled",
+			expectedError:     false,
+		},
 	}
 
 	for _, test := range tests {
@@ -754,6 +771,161 @@ func TestTagResourceEventSkippedWithoutMonitoringTag(t *testing.T) {
 			assert.Equal(t, test.expectedOutputMsg, res)
 		})
 	}
+}
+
+func TestCreateFunctionEventHandling(t *testing.T) {
+	ctx := setupHandlerTest()
+
+	err := os.Setenv(common.EnvAwsRegion, "us-east-1")
+	assert.Nil(t, err)
+	defer os.Unsetenv(common.EnvAwsRegion)
+
+	tests := []struct {
+		name              string
+		tagEventsEnabled  bool
+		event             map[string]interface{}
+		expectedOutputMsg string
+		expectedError     bool
+	}{
+		{
+			name:             "CreateFunction20150331 event skipped when TAG_EVENTS_ENABLED is false",
+			tagEventsEnabled: false,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+						"tags": map[string]interface{}{
+							"logzio:logs": "true",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event skipped - feature disabled",
+			expectedError:     false,
+		},
+		{
+			name:             "CreateFunction20150331 event skipped when monitoring tag is absent",
+			tagEventsEnabled: true,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+						"tags": map[string]interface{}{
+							"Environment": "Production",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event skipped - monitoring tag not present",
+			expectedError:     false,
+		},
+		{
+			name:             "CreateFunction20150331 event skipped when monitoring tag value is false",
+			tagEventsEnabled: true,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+						"tags": map[string]interface{}{
+							"logzio:logs": "false",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event skipped - monitoring tag not present",
+			expectedError:     false,
+		},
+		{
+			name:             "CreateFunction20150331 event skipped when no tags field present",
+			tagEventsEnabled: true,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event skipped - monitoring tag not present",
+			expectedError:     false,
+		},
+		{
+			name:             "CreateFunction20150331 event with missing functionName field",
+			tagEventsEnabled: true,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"tags": map[string]interface{}{
+							"logzio:logs": "true",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "",
+			expectedError:     true,
+		},
+		{
+			name:             "CreateFunction20150331 event handled successfully",
+			tagEventsEnabled: true,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+						"tags": map[string]interface{}{
+							"logzio:logs": "true",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event handled successfully",
+			expectedError:     false,
+		},
+		{
+			name:             "CreateFunction20150331 event monitoring tag case insensitive",
+			tagEventsEnabled: true,
+			event: map[string]interface{}{
+				"detail": map[string]interface{}{
+					"eventName": "CreateFunction20150331",
+					"requestParameters": map[string]interface{}{
+						"functionName": "my-function",
+						"tags": map[string]interface{}{
+							"LOGZIO:LOGS": "TRUE",
+						},
+					},
+				},
+			},
+			expectedOutputMsg: "CreateFunction20150331 event handled successfully",
+			expectedError:     false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.tagEventsEnabled {
+				err := os.Setenv("TAG_EVENTS_ENABLED", "true")
+				assert.Nil(t, err)
+			} else {
+				os.Unsetenv("TAG_EVENTS_ENABLED")
+			}
+
+			res, err := HandleRequest(ctx, test.event)
+
+			if test.expectedError {
+				assert.NotNil(t, err)
+				assert.Equal(t, test.expectedOutputMsg, res)
+			} else {
+				assert.Nil(t, err)
+				assert.Equal(t, test.expectedOutputMsg, res)
+			}
+		})
+	}
+
+	os.Unsetenv("TAG_EVENTS_ENABLED")
 }
 
 func TestHandleTagResourceEvent(t *testing.T) {
