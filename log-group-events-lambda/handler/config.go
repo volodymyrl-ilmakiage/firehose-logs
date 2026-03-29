@@ -21,9 +21,30 @@ type Config struct {
 	servicesValue        string
 	filterName           string
 	filterPattern        string
+	monitoringTagKey     string
+	monitoringTagValue   string
+	tagEventsEnabled     bool
 }
 
 func NewConfig() *Config {
+	// Get monitoring tag key and value with defaults
+	monitoringTagKey := os.Getenv(envMonitoringTagKey)
+	if monitoringTagKey == emptyString {
+		monitoringTagKey = defaultMonitoringTagKey
+	}
+
+	monitoringTagValue := os.Getenv(envMonitoringTagValue)
+	if monitoringTagValue == emptyString {
+		monitoringTagValue = defaultMonitoringTagValue
+	}
+
+	// Get tag events enabled flag (default: false)
+	tagEventsEnabled := false
+	tagEventsEnabledStr := os.Getenv(envTagEventsEnabled)
+	if tagEventsEnabledStr == "true" || tagEventsEnabledStr == "True" || tagEventsEnabledStr == "TRUE" {
+		tagEventsEnabled = true
+	}
+
 	c := Config{
 		awsPartition:         os.Getenv(envAwsPartition),
 		destinationArn:       os.Getenv(envFirehoseArn),
@@ -36,6 +57,9 @@ func NewConfig() *Config {
 		servicesValue:        os.Getenv(common.EnvServices),
 		filterName:           os.Getenv(envStackName) + "_" + subscriptionFilterName,
 		filterPattern:        os.Getenv(envFilterPattern),
+		monitoringTagKey:     monitoringTagKey,
+		monitoringTagValue:   monitoringTagValue,
+		tagEventsEnabled:     tagEventsEnabled,
 	}
 
 	err := c.validateRequired()

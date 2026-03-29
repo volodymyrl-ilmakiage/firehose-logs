@@ -75,6 +75,10 @@ func (cwLogsClient *CloudWatchLogsClient) addSubscriptionFilter(logGroups []stri
 					} else if ok && awsErr.Code() == "LimitExceededException" {
 						sugLog.Warnf("Limit exceeded while trying to add subscription filter for %s: %v", logGroup, err.Error())
 						return
+					} else if ok && awsErr.Code() == "ResourceNotFoundException" {
+						sugLog.Errorf("Log group %s does not exist - subscription filter cannot be added", logGroup)
+						result = multierror.Append(result, err)
+						return
 					} else {
 						sugLog.Errorf("Error while trying to add subscription filter for %s: %v", logGroup, err.Error())
 						result = multierror.Append(result, err)
@@ -203,4 +207,33 @@ func (cwLogsClient *CloudWatchLogsClient) getLogGroupsWithPrefix(prefix string) 
 	}
 
 	return logGroups, nil
+}
+
+func (cwLogsClient *CloudWatchLogsClient) hasSubscriptionFilter(logGroupName string) (bool, error) {
+	if cwLogsClient == nil {
+		return false, fmt.Errorf("CloudWatch Logs client is nil")
+	}
+
+	destinationArn := envConfig.destinationArn
+
+	output, err := cwLogsClient.Client.DescribeSubscriptionFilters(&cloudwatchlogs.DescribeSubscriptionFiltersInput{
+		LogGroupName: &logGroupName,
+	})
+
+	if err != nil {
+		var awsErr awserr.Error
+		ok := errors.As(err, &awsErr)
+		if ok && awsErr.Code() == "ResourceNotFoundException" {
+			return false, nil
+		}
+		return false, err
+	}
+
+	for _, filter := range output.SubscriptionFilters {
+		if filter.DestinationArn != nil && *filter.DestinationArn == destinationArn {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }

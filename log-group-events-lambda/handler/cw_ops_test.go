@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
 	lp "github.com/logzio/firehose-logs/logger"
@@ -87,6 +88,42 @@ func (m *MockCloudWatchLogsClient) DescribeLogGroups(input *cloudwatchlogs.Descr
 	}
 }
 
+func (m *MockCloudWatchLogsClient) DescribeSubscriptionFilters(input *cloudwatchlogs.DescribeSubscriptionFiltersInput) (*cloudwatchlogs.DescribeSubscriptionFiltersOutput, error) {
+	switch *input.LogGroupName {
+	case "/aws/lambda/with-filter":
+		// Filter with matching destination ARN (test-arn from setupSFTest)
+		return &cloudwatchlogs.DescribeSubscriptionFiltersOutput{
+			SubscriptionFilters: []*cloudwatchlogs.SubscriptionFilter{
+				{
+					FilterName:     aws.String("test-stack_logzio_firehose"),
+					DestinationArn: aws.String("test-arn"),  // Matches envConfig.destinationArn
+				},
+			},
+		}, nil
+	case "/aws/lambda/without-filter":
+		return &cloudwatchlogs.DescribeSubscriptionFiltersOutput{
+			SubscriptionFilters: []*cloudwatchlogs.SubscriptionFilter{},
+		}, nil
+	case "/aws/lambda/different-filter":
+		// Filter with different destination ARN
+		return &cloudwatchlogs.DescribeSubscriptionFiltersOutput{
+			SubscriptionFilters: []*cloudwatchlogs.SubscriptionFilter{
+				{
+					FilterName:     aws.String("some-other-filter"),
+					DestinationArn: aws.String("arn:aws:firehose:us-east-1:123456789012:deliverystream/other"),
+				},
+			},
+		}, nil
+	case "/aws/lambda/error-group":
+		// Return proper AWS error type
+		return nil, awserr.New("ResourceNotFoundException", "log group does not exist", nil)
+	default:
+		return &cloudwatchlogs.DescribeSubscriptionFiltersOutput{
+			SubscriptionFilters: []*cloudwatchlogs.SubscriptionFilter{},
+		}, nil
+	}
+}
+
 func setupSFTest() {
 	err := os.Setenv(envFirehoseArn, "test-arn")
 	if err != nil {
@@ -99,6 +136,11 @@ func setupSFTest() {
 	}
 
 	err = os.Setenv(envAwsPartition, "test-partition")
+	if err != nil {
+		return
+	}
+
+	err = os.Setenv(envStackName, "test-stack")
 	if err != nil {
 		return
 	}
@@ -325,6 +367,61 @@ func TestGetLogGroupsWithPrefix(t *testing.T) {
 				assert.NotNil(t, err)
 			} else {
 				assert.Nil(t, err)
+			}
+		})
+	}
+}
+
+func TestHasSubscriptionFilter(t *testing.T) {
+	setupSFTest()
+	sugLog = lp.GetSugaredLogger()
+	envConfig = NewConfig()
+
+	mockClient := new(MockCloudWatchLogsClient)
+	cwClient := &CloudWatchLogsClient{Client: mockClient}
+
+	tests := []struct {
+		name           string
+		logGroupName   string
+		expectedExists bool
+		expectedError  bool
+	}{
+		{
+			name:           "Log group with matching destination ARN",
+			logGroupName:   "/aws/lambda/with-filter",
+			expectedExists: true,
+			expectedError:  false,
+		},
+		{
+			name:           "Log group without subscription filter",
+			logGroupName:   "/aws/lambda/without-filter",
+			expectedExists: false,
+			expectedError:  false,
+		},
+		{
+			name:           "Log group with different destination ARN",
+			logGroupName:   "/aws/lambda/different-filter",
+			expectedExists: false,
+			expectedError:  false,
+		},
+		{
+			name:           "Log group does not exist (ResourceNotFoundException)",
+			logGroupName:   "/aws/lambda/error-group",
+			expectedExists: false,
+			expectedError:  false, // ResourceNotFoundException should return false, not error
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exists, err := cwClient.hasSubscriptionFilter(test.logGroupName)
+
+			assert.Equal(t, test.expectedExists, exists, "Expected exists to be %v but got %v", test.expectedExists, exists)
+
+			if test.expectedError {
+				assert.NotNil(t, err, "Expected an error but got nil")
+			} else {
+				assert.Nil(t, err, "Expected error to be nil but got %v", err)
 			}
 		})
 	}

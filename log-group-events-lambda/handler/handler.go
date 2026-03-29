@@ -3,10 +3,14 @@ package handler
 import (
 	"context"
 	"fmt"
+
+	awsArn "github.com/aws/aws-sdk-go/aws/arn"
+
+	"strings"
+
 	"github.com/logzio/firehose-logs/common"
 	"github.com/logzio/firehose-logs/logger"
 	"go.uber.org/zap"
-	"strings"
 )
 
 var sugLog *zap.SugaredLogger
@@ -62,6 +66,82 @@ func HandleRequest(ctx context.Context, event map[string]interface{}) (string, e
 			return "", err
 		}
 
+	case "TagResource":
+		sugLog.Debug("Detected EventBridge TagResource event")
+
+		if !envConfig.tagEventsEnabled {
+			sugLog.Debug("Skipping TagResource event - TAG_EVENTS_ENABLED is not set to true")
+			return "TagResource event skipped - feature disabled", nil
+		}
+
+		taggedResource, ok := requestParameters["resourceArn"].(string)
+		if !ok {
+			sugLog.Errorf("`resourceArn` is not of type string or missing from EventBridge event")
+			return "", fmt.Errorf("`resourceArn` is not of type string or missing from EventBridge event")
+		}
+
+		// Check if the monitoring tag is present
+		if !hasMonitoringTag(requestParameters) {
+			sugLog.Debugf("Skipping TagResource event - monitoring tag %s: %s not present", envConfig.monitoringTagKey, envConfig.monitoringTagValue)
+			return "TagResource event skipped - monitoring tag not present", nil
+		}
+
+		_, err := handleTagResourceEvent(ctx, taggedResource)
+		if err != nil {
+			return "", err
+		}
+
+	case "TagResource20170331v2":
+		sugLog.Debug("Detected EventBridge TagResource20170331v2 event")
+
+		if !envConfig.tagEventsEnabled {
+			sugLog.Debug("Skipping TagResource20170331v2 event - TAG_EVENTS_ENABLED is not set to true")
+			return "TagResource20170331v2 event skipped - feature disabled", nil
+		}
+
+		taggedResource, ok := requestParameters["resource"].(string)
+		if !ok {
+			sugLog.Errorf("`resource` is not of type string or missing from EventBridge event.")
+			return "", fmt.Errorf("`resource` is not of type string or missing from EventBridge event")
+		}
+
+		if !hasMonitoringTag(requestParameters) {
+			sugLog.Debugf("Skipping TagResource20170331v2 event - monitoring tag %s: %s not present", envConfig.monitoringTagKey, envConfig.monitoringTagValue)
+			return "TagResource20170331v2 event skipped - monitoring tag not present", nil
+		}
+
+		_, err := handleTagResourceEvent(ctx, taggedResource)
+
+		if err != nil {
+			return "", err
+		}
+
+	case "CreateFunction20150331":
+		sugLog.Debug("Detected EventBridge CreateFunction20150331 event")
+
+		if !envConfig.tagEventsEnabled {
+			sugLog.Debug("Skipping CreateFunction20150331 event - TAG_EVENTS_ENABLED is not set to true")
+			return "CreateFunction20150331 event skipped - feature disabled", nil
+		}
+
+		functionName, ok := requestParameters["functionName"].(string)
+		if !ok {
+			sugLog.Errorf("`functionName` is not of type string or missing from EventBridge event.")
+			return "", fmt.Errorf("`functionName` is not of type string or missing from EventBridge event")
+		}
+		taggedResource := fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", envConfig.region, envConfig.accountId, functionName)
+
+		if !hasMonitoringTag(requestParameters) {
+			sugLog.Debugf("Skipping CreateFunction20150331 event - monitoring tag %s: %s not present", envConfig.monitoringTagKey, envConfig.monitoringTagValue)
+			return "CreateFunction20150331 event skipped - monitoring tag not present", nil
+		}
+
+		_, err := handleTagResourceEvent(ctx, taggedResource)
+
+		if err != nil {
+			return "", err
+		}
+
 	case "SubscriptionFilterEvent":
 		sugLog.Debug("Detected SubscriptionFilterEvent event")
 
@@ -102,21 +182,36 @@ func handleNewLogGroupEvent(ctx context.Context, newLogGroup string) {
 		return
 	}
 
+	// Check if subscription filter already exists to avoid redundant API calls
+	cwClient, err := getCloudWatchLogsClient()
+	if err != nil {
+		sugLog.Error("Failed to get cloudwatch logs client: ", err)
+		return
+	}
+
+	hasFilter, err := cwClient.hasSubscriptionFilter(newLogGroup)
+	if err != nil {
+		sugLog.Debug("Error checking if subscription filter exists for ", newLogGroup, ": ", err)
+		// Continue anyway.  If the check fails (network issue, temporary API error, etc.), we don't want to completely give up
+	} else if hasFilter {
+		sugLog.Debug("Subscription filter already exists for log group ", newLogGroup, ", skipping")
+		return
+	}
+
 	// Check if the log group is of a monitored service
 	currMonitoredServices := getServices()
 	var added []string
 	if currMonitoredServices != nil {
 		serviceToPrefix := getServicesMap()
 
-		cwClient, err := getCloudWatchLogsClient()
-		if err != nil {
-			sugLog.Error("Failed to get cloudwatch logs client")
-		}
-
 		for _, service := range currMonitoredServices {
 			if prefix, ok := serviceToPrefix[service]; ok {
 				if strings.Contains(newLogGroup, prefix) {
-					added, _ = cwClient.addSubscriptionFilter([]string{newLogGroup})
+					var err error
+					added, err = cwClient.addSubscriptionFilter([]string{newLogGroup})
+					if err != nil {
+						sugLog.Errorf("Failed to add subscription filter to log group %s: %v", newLogGroup, err)
+					}
 					if len(added) > 0 {
 						sugLog.Info("Added subscription filter to log group: ", newLogGroup)
 						return
@@ -129,14 +224,13 @@ func handleNewLogGroupEvent(ctx context.Context, newLogGroup string) {
 	// Check if the log group is of a monitored custom prefix
 	currCustomGroupsPrefixes := getCustomGroupsPrefixes()
 	if len(currCustomGroupsPrefixes) > 0 {
-		cwClient, err := getCloudWatchLogsClient()
-		if err != nil {
-			sugLog.Error("Failed to get cloudwatch logs client")
-		}
-
 		for _, prefix := range currCustomGroupsPrefixes {
 			if strings.Contains(newLogGroup, prefix) {
-				added, _ = cwClient.addSubscriptionFilter([]string{newLogGroup})
+				var err error
+				added, err = cwClient.addSubscriptionFilter([]string{newLogGroup})
+				if err != nil {
+					sugLog.Errorf("Failed to add subscription filter to log group %s: %v", newLogGroup, err)
+				}
 				if len(added) > 0 {
 					sugLog.Info("Added subscription filter to log group: ", newLogGroup)
 					return
@@ -235,4 +329,54 @@ func handleDeleteEvent(ctx context.Context, event common.RequestParameters) (str
 
 	sugLog.Info("Deleted subscription filters for the following log groups: ", deleted)
 	return "Event handled successfully", nil
+}
+
+// hasMonitoringTag checks if the configured monitoring tag is present in the request parameters
+func hasMonitoringTag(requestParameters map[string]interface{}) bool {
+	tags, ok := requestParameters["tags"].(map[string]interface{})
+	if !ok {
+		sugLog.Debug("No tags found in requestParameters or tags is not a map")
+		return false
+	}
+
+	expectedKey := envConfig.monitoringTagKey
+	expectedValue := envConfig.monitoringTagValue
+
+	// Check for monitoring tag (case-insensitive) with expected value (case-insensitive)
+	for key, value := range tags {
+		if strings.EqualFold(key, expectedKey) {
+			if valueStr, ok := value.(string); ok && strings.EqualFold(valueStr, expectedValue) {
+				sugLog.Debugf("Found monitoring tag %s: %s", expectedKey, expectedValue)
+				return true
+			}
+		}
+	}
+
+	sugLog.Debugf("Monitoring tag %s: %s not found", expectedKey, expectedValue)
+	return false
+}
+
+func handleTagResourceEvent(ctx context.Context, taggedResource string) (string, error) {
+	if !awsArn.IsARN(taggedResource) {
+		return "", fmt.Errorf("provided string is not AWS arn")
+	}
+
+	resourceType, err := awsArn.Parse(taggedResource)
+	if err != nil {
+		return "", fmt.Errorf("unable to parse aws arn")
+	}
+
+	parts := strings.SplitN(resourceType.Resource, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unable to get name from arn.resource ")
+	}
+
+	switch resourceType.Service {
+	case "lambda":
+		handleNewLogGroupEvent(ctx, fmt.Sprintf("/aws/lambda/%s", parts[1]))
+	case "logs":
+		handleNewLogGroupEvent(ctx, parts[1])
+	}
+
+	return "Tag Resource Event handled successfully.", nil
 }

@@ -296,6 +296,68 @@ Resources:
       Principal: 'events.amazonaws.com'
       SourceArn: !GetAtt secretChangeEvent.Arn
 
+  tagLogGroupEvent:
+    Condition: createEventbridgeTrigger
+    DependsOn: LogGroupEventsLambdaFunction
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: 'This event is triggered when a CloudWatch log group is tagged, and triggers the Logz.io subscription filter function.'
+      EventPattern:
+        source:
+          - 'aws.logs'
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - 'logs.amazonaws.com'
+          eventName:
+            - 'TagResource'
+      Name: !Join [ '-', [ 'logGroupTagged', !Select [ 4, !Split [ '-', !Select [ 2, !Split [ '/', !Ref AWS::StackId ] ] ] ] ] ]
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LogGroupEventsLambdaFunction.Arn
+          Id: 'TagLogGroupEventsLambdaFunctionTarget'
+
+  tagLambdaEvent:
+    Condition: createEventbridgeTrigger
+    DependsOn: LogGroupEventsLambdaFunction
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Description: 'This event is triggered when a Lambda function is tagged, and triggers the Logz.io subscription filter function.'
+      EventPattern:
+        source:
+          - 'aws.lambda'
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventSource:
+            - 'lambda.amazonaws.com'
+          eventName:
+            - 'TagResource20170331v2'
+      Name: !Join [ '-', [ 'lambdaTagged', !Select [ 4, !Split [ '-', !Select [ 2, !Split [ '/', !Ref AWS::StackId ] ] ] ] ] ]
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LogGroupEventsLambdaFunction.Arn
+          Id: 'TagLambdaEventsLambdaFunctionTarget'
+
+  PermissionForTagLogGroupEventToInvokeLambda:
+    Condition: createEventbridgeTrigger
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LogGroupEventsLambdaFunction
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt tagLogGroupEvent.Arn
+
+  PermissionForTagLambdaEventToInvokeLambda:
+    Condition: createEventbridgeTrigger
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LogGroupEventsLambdaFunction
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt tagLambdaEvent.Arn
+
   # Firehose and S3 Resources
   logzioFirehose:
     Type: AWS::KinesisFirehose::DeliveryStream
